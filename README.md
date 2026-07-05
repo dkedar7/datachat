@@ -4,7 +4,7 @@
 
 Upload a CSV/Excel file (or paste a link to one), then open the **Data Analyst** and ask: *"what drives sales?"*, *"plot tip vs total bill by day"*, *"show the correlation heatmap"*. The agent writes pandas/plotly code, runs it in a sandbox, and the resulting **charts and tables render inline in the chat**.
 
-<!-- ![DataChat](docs/hero.png) -->
+![DataChat — a dataset loaded, with the Data Analyst plotting a chart from it](docs/hero.png)
 
 ## How it works
 

@@ -50,6 +50,8 @@ def build_app() -> FastDash:
         chat_agent=make_analyst(),
         chat_agent_title="Data Analyst",
         chat_agent_drive=False,  # the analyst reads the data; it doesn't drive inputs
+        chat_agent_position="sidebar",  # chat stacked under the inputs, always shown
+        chat_placeholder="Load a dataset, then ask me to explore or plot it.",
     )
 
 

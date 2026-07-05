@@ -37,7 +37,7 @@ with sync_playwright() as p:
         page.wait_for_timeout(6000)
     except Exception:
         pass
-    page.click("#chat-sidecar-toggle")              # open the Data Analyst
+    # The analyst chat is stacked in the left sidebar (always visible) — no toggle.
     page.wait_for_selector("#chat-input", timeout=15000)
     page.fill("#chat-input", ASK)
     page.press("#chat-input", "Enter")

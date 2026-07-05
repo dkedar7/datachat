@@ -105,5 +105,5 @@ def summary_markdown(df: pd.DataFrame) -> str:
         lines.append(f"| {c} | {df[c].dtype} | {df[c].notna().sum():,} | {s} |")
     if df.shape[1] > 40:
         lines.append(f"| ... | | | *(+{df.shape[1] - 40} more columns)* |")
-    lines.append("\n*Open the **Data Analyst** (bottom-right) and ask for any chart or insight.*")
+    lines.append("\n*Ask the **Data Analyst** in the left sidebar for any chart or insight.*")
     return "\n".join(lines)

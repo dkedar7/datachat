@@ -1,8 +1,9 @@
-"""DataChat — upload or link any dataset, then chat with a data-analyst agent.
+"""DataChat -- upload or link any dataset, then chat with a data-analyst agent.
 
 The app itself is a small upload/preview surface; the star is the **Data
-Analyst** sidecar: a LangGraph + OpenRouter agent that runs sandboxed
-pandas/plotly code and plots the answers inline in the chat.
+Analyst** in the left sidebar: a LangGraph + OpenRouter agent that runs
+pandas/plotly code in fast_dash's built-in sandbox and plots the answers inline
+in the chat via fast_dash's inline typed rendering.
 """
 
 from __future__ import annotations
@@ -18,8 +19,8 @@ from analyst.agent import make_analyst
 def explore(dataset_file: Upload, dataset_url: str = ""):
     """Load a dataset and show a preview + summary.
 
-    Upload a CSV/Excel file, or paste a link to one. Then open the Data Analyst
-    (bottom-right) and ask for any chart or insight.
+    Upload a CSV/Excel file, or paste a link to one. Then ask the Data Analyst
+    in the left sidebar for any chart or insight.
 
     Args:
         dataset_file: A CSV or Excel file to analyze.
@@ -29,7 +30,7 @@ def explore(dataset_file: Upload, dataset_url: str = ""):
     if df is None:
         placeholder = pd.DataFrame({"Getting started": [
             "1. Upload a CSV/Excel file or paste a data link on the left.",
-            "2. Open the Data Analyst (bottom-right) and ask a question.",
+            "2. Ask the Data Analyst in the left sidebar a question.",
         ]})
         return placeholder, (
             "### No dataset loaded yet\n\nUpload a file or paste a link, then click "
@@ -47,10 +48,9 @@ def build_app() -> FastDash:
         subheader="Upload or link any dataset, then chat to explore and plot it",
         accent="violet",
         github_url="https://github.com/dkedar7/datachat",
-        chat_agent=make_analyst(),
-        chat_agent_title="Data Analyst",
-        chat_agent_drive=False,  # the analyst reads the data; it doesn't drive inputs
-        chat_agent_position="sidebar",  # chat stacked under the inputs, always shown
+        chat=make_analyst(),
+        chat_title="Data Analyst",
+        chat_tools=(),  # the analyst reads the data; it operates nothing structural
         chat_placeholder="Load a dataset, then ask me to explore or plot it.",
     )
 

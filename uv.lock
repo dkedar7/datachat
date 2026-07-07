@@ -352,7 +352,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "fast-dash", extras = ["langstage"], specifier = ">=0.5.5" },
+    { name = "fast-dash", extras = ["langstage"], specifier = ">=0.6.1" },
     { name = "gunicorn", marker = "sys_platform != 'win32' and extra == 'prod'", specifier = ">=22.0" },
     { name = "langchain-core", specifier = ">=0.3" },
     { name = "langchain-openai", specifier = ">=0.2" },
@@ -406,7 +406,7 @@ wheels = [
 
 [[package]]
 name = "fast-dash"
-version = "0.5.5"
+version = "0.6.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "dash" },
@@ -422,9 +422,9 @@ dependencies = [
     { name = "pillow" },
     { name = "pyreadline3" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/e4/81/c561a9532e0a6b3228275172574c2086ea46d844e5a24df81e70b60e9823/fast_dash-0.5.5.tar.gz", hash = "sha256:b418ece426f4d9aeb5577cb4bd32050eb38c2007a367f6e5481d3f9c1405d208", size = 137920, upload-time = "2026-07-05T22:28:57.287Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/0c/80/1da91a89564a03bfced1c9a06b4cafbf721061c93a554cc33b0cc7415456/fast_dash-0.6.1.tar.gz", hash = "sha256:b44cd2fbe09d76d58b7b9589be7267b8030c56d029dc76739af4c2fc2296f562", size = 168217, upload-time = "2026-07-07T12:28:49.539Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/44/84/36df8a9f1ead67d2376f7daf9cdb41427ded6565a19ffebe2fffab111333/fast_dash-0.5.5-py3-none-any.whl", hash = "sha256:74d2875fb56ee58020840f598111486f0db127cdb27649f6b45e0df411a0e4cf", size = 136942, upload-time = "2026-07-05T22:28:55.849Z" },
+    { url = "https://files.pythonhosted.org/packages/47/d0/1f905d976a8e4f5adf108ed4f609b9a8617b4a2ade09a0ff653380e5a4b7/fast_dash-0.6.1-py3-none-any.whl", hash = "sha256:a8145b4e1b02ea82ab1edb66e12d7881d4b07f1a9ac628b6b157a998cc9e4e31", size = 168723, upload-time = "2026-07-07T12:28:48.135Z" },
 ]
 
 [package.optional-dependencies]

@@ -24,12 +24,15 @@ from .data import current_dataframe, schema_text
 
 UPLOAD_ID, URL_ID = "dataset_file", "dataset_url"
 
-SYSTEM_PROMPT = """You are a data analyst. A pandas DataFrame is ALREADY loaded \
-as `df` -- never load data yourself. Use the `run_analysis` tool to explore it \
-and answer questions.
+SYSTEM_PROMPT = """You are a data analyst. Use the `run_analysis` tool to run \
+Python and answer with real output.
 
 In the code you pass to run_analysis:
-- The DataFrame is `df`; `pd`, `np`, `px` (plotly.express), and `go` are preloaded.
+- `pd`, `np`, `px` (plotly.express), and `go` are preloaded.
+- When the user has loaded a dataset it is available as `df` -- use it, and \
+never reload it. When NO dataset is loaded, `df` is not defined; if the user \
+asks for a demo or example chart, create your own data (e.g. with `pd.DataFrame` \
+or `np.random`) right in the code.
 - To PLOT, build a plotly figure and assign it to `fig` (or end with a bare \
 figure expression). Prefer `px` for charts. Always label axes/titles.
 - To show a TABLE, assign a DataFrame to `result` (or end with a bare DataFrame).
@@ -39,14 +42,13 @@ describe a chart you didn't actually create.
 - The tool result's `note` field is what you read (printed output or the error \
 trace); the figure/table are shown to the user, not returned to you as data.
 
-Workflow: inspect the schema, run focused code, and give a short, concrete \
-answer grounded in the results. If code errors, read the traceback and fix it. \
-Keep replies concise.
+Workflow: when a dataset is loaded, inspect its schema first; run focused code \
+and give a short, concrete answer grounded in the results. If code errors, read \
+the traceback and fix it. Keep replies concise.
 
-If no dataset is loaded yet, just chat: answer the user's question, briefly say \
-what you can do, and invite them to upload a CSV/Excel file or paste a data link \
-whenever they want analysis. Do NOT call run_analysis until a dataset is \
-loaded."""
+If no dataset is loaded and the user just wants to chat, help them get started \
+and invite them to upload a CSV/Excel file or paste a data link to analyze \
+their own data."""
 
 
 def _thread_id(config: RunnableConfig) -> str:
@@ -62,10 +64,10 @@ def run_analysis(code: str, config: RunnableConfig) -> str:
     """
     tid = _thread_id(config)
     df = current_dataframe(tid)
-    if df is None:
-        return json.dumps({"note": "No dataset is loaded yet. Ask the user to "
-                                   "upload a file or paste a link."})
-    r = fast_dash.sandbox.run_code(code, inject={"df": df})
+    # Run whether or not a dataset is loaded: with data, `df` is injected; with
+    # none, the code runs on its own (e.g. synthetic/demo data the agent builds).
+    inject = {"df": df} if df is not None else {}
+    r = fast_dash.sandbox.run_code(code, inject=inject)
 
     note_parts = []
     if r.get("error"):
@@ -153,9 +155,10 @@ def make_analyst():
         if df is not None:
             prompt = f"[Dataset loaded: {schema_text(df)}]\n\n{query}"
         else:
-            prompt = ("[No dataset is loaded yet -- the user has not uploaded a file "
-                      "or pasted a link. Chat normally and help them get started; do "
-                      "not call run_analysis until a dataset is available.]\n\n" + query)
+            prompt = ("[No dataset is loaded yet -- `df` is not defined. You can "
+                      "still run code to generate and plot example/synthetic data if "
+                      "the user asks. Invite them to upload a CSV/Excel file or paste "
+                      "a link when they want to analyze their own data.]\n\n" + query)
         try:
             async for frame in bridge(prompt, ctx):
                 yield frame

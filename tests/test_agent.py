@@ -30,11 +30,25 @@ def test_run_analysis_payload_carries_a_table():
     assert payload["table"]["shape"][0] == 2
 
 
-def test_run_analysis_reports_missing_dataset():
-    out = run_analysis.invoke({"code": "df.head()"},
-                              {"configurable": {"thread_id": "no-data-here"}})
+def test_run_analysis_runs_self_contained_code_without_a_dataset():
+    """No dataset loaded: run_analysis still runs code (e.g. synthetic/demo data)
+    instead of refusing -- so the agent can plot dummy data on request."""
+    out = run_analysis.invoke(
+        {"code": "fig = px.scatter(x=[1, 2, 3], y=[3, 1, 2], title='Demo')"},
+        {"configurable": {"thread_id": "no-data-here"}})
     payload = json.loads(out)
-    assert "No dataset" in payload["note"]
+    assert "No dataset" not in payload["note"]          # no hard refusal
+    assert isinstance(payload["figure"], str)           # the demo figure rendered
+
+
+def test_run_analysis_reports_a_missing_df_reference_as_an_error():
+    """Referencing `df` with no dataset yields a traceback the agent can act on
+    (fix by generating data), not a canned refusal."""
+    out = run_analysis.invoke({"code": "df.head()"},
+                              {"configurable": {"thread_id": "no-data-here-2"}})
+    payload = json.loads(out)
+    assert "Error" in payload["note"] and "df" in payload["note"]
+    assert "figure" not in payload
 
 
 # --- AnalysisDisplay extractor -------------------------------------------- #

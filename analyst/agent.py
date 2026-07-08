@@ -1,26 +1,33 @@
-"""The Data Analyst -- a LangGraph agent that drives the app and plots into it.
+"""The Data Analyst -- a LangGraph agent that drives the app and renders into it.
 
 Wired into Fast Dash as a ``chat=`` agent, it is a full complement (or
-replacement) for the input form. It can:
+replacement) for the input form. It has FULL control of the app's three output
+panels AND their layout, plus it can drive the inputs. It can:
 
 * **drive the form** -- ``set_app_input("dataset_url", <url>)`` then ``run_app()``
   set an input and re-run the deterministic app (files still use the Upload
   button; a file input can't be set from chat);
-* **plot anything into the app** -- ``run_analysis`` runs pandas/plotly code in
-  fast_dash's built-in subprocess sandbox and pushes any produced *figure* into
-  the app's main-area **Chart** panel via a ``set_output`` frame (a *table* stays
-  inline in the chat).
+* **render into ALL THREE output panels** -- ``run_analysis`` runs pandas/plotly
+  code in fast_dash's built-in subprocess sandbox and routes a produced *figure*
+  into the **Chart** panel (B) and a produced *table* into the **Data Preview**
+  panel (A); ``write_summary`` puts a written markdown analysis into the
+  **Summary** panel (C). Charts / tables / summaries land in the app's panels,
+  NOT inline in the chat;
+* **rearrange the panels** -- ``arrange_panels(mosaic)`` sets ANY valid mosaic
+  over the three panels (A/B/C).
 
 Tools emit frames through ``fast_dash.agent_tools.emit_frame``; fast_dash's turn
 runner drains and dispatches them during the turn (the same mechanism fast_dash's
-own toolkit uses). The streaming + typed inline rendering are handled by
-fast_dash's langstage bridge. Provider: OpenRouter.
+own toolkit uses). A ``set_output`` frame carries a raw Python value (a plotly
+dict, a DataFrame, or a markdown string) that fast_dash transforms through the
+TARGET slot's component pipeline server-side. Provider: OpenRouter.
 """
 
 from __future__ import annotations
 
 import json
 
+import pandas as pd
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
 
@@ -34,51 +41,73 @@ from .data import current_dataframe, schema_text
 
 UPLOAD_ID, URL_ID = "dataset_file", "dataset_url"
 
-# The output slot the analyst renders figures into. Outputs are
-# ``[Table, Graph, Markdown]`` and slot letters are assigned by output order, so
-# the Graph (chart) is the second output -> "B". Verified against fast_dash's
-# ``layout_object.output_slot_letters`` / ``_resolve_slot`` (see test_agent.py).
-CHART_SLOT = "B"
+# The output slots the analyst renders into. Outputs are ``[Table, Graph,
+# Markdown]`` and mosaic slot letters are assigned by output order, so:
+#   A -> Table    (output index 0, "Data preview")
+#   B -> Graph    (output index 1, "Chart")
+#   C -> Markdown (output index 2, "Summary")
+# A ``set_output`` frame carries a raw value that fast_dash transforms through
+# that slot's component: a plotly figure DICT -> Graph.figure; a pandas
+# DataFrame -> Table.data (to_dict("records")); a markdown STRING ->
+# Markdown.children. Verified against a real FastDash instance's
+# ``_resolve_slot`` / ``_sidecar_set_output`` (see test_agent.py).
+PREVIEW_SLOT = "A"   # Data Preview  (Table)
+CHART_SLOT = "B"     # Chart         (Graph)
+SUMMARY_SLOT = "C"   # Summary       (Markdown)
 
-SYSTEM_PROMPT = """You are a data analyst embedded in the DataChat app. You are a \
-full complement to the app's input form: you can operate the app AND plot into it.
+SYSTEM_PROMPT = """You are a data analyst embedded in the DataChat app. You have \
+FULL control of the app's three output panels AND their layout, and you can drive \
+the app's inputs. You are a full complement to (or replacement for) the form.
 
-You have three ways to act:
+The app has THREE output panels you own:
+- A = Data Preview (a table)
+- B = Chart (a plotly figure)
+- C = Summary (written markdown)
 
-1. DRIVE THE APP (its inputs + Run). To load a dataset from a URL, call \
-`set_app_input("dataset_url", "<url>")` then `run_app()` -- this sets the app's \
-input and re-runs the deterministic app, updating its preview/summary. You \
-CANNOT set the file input from chat; if the user has a local file, tell them to \
-use the Upload button on the left, then click Run (or ask you to run).
+Ways to act:
 
-2. PLOT ANYTHING INTO THE APP'S CHART PANEL, via `run_analysis`. Build the best \
-plotly figure you can and it renders in the app's main area (the Chart panel), \
-NOT in the chat. In the code you pass to run_analysis:
+1. RENDER INTO THE PANELS via `run_analysis(code)`. Write pandas/plotly code; \
+what you produce is routed to the right panel (NOT shown inline in the chat):
 - `pd`, `np`, `px` (plotly.express), and `go` are preloaded.
-- When a dataset is loaded it is available as `df` -- use it, and never reload \
-it. When NO dataset is loaded, `df` is not defined; if the user asks for a demo \
-or example chart, create your own data (e.g. `pd.DataFrame` or `np.random`) right \
-in the code.
-- To PLOT, assign a plotly figure to `fig` (or end with a bare figure \
-expression). Prefer `px`. Design it well: clear title, labeled axes, sensible \
-colors/marks. The figure is placed into the app's Chart panel automatically.
-- To show a TABLE, assign a DataFrame to `result` (or end with a bare \
-DataFrame). Tables render inline in the chat.
+- When a dataset is loaded it is available as `df` -- use it, never reload it. \
+When NO dataset is loaded, `df` is not defined; if the user wants a demo or \
+example, create your own data (e.g. `pd.DataFrame` or `np.random`) in the code.
+- For a CHART, assign a plotly figure to `fig` (or end with a bare figure \
+expression). It goes to the Chart panel (B). Design it well: clear title, \
+labeled axes, sensible colors/marks. Prefer `px`.
+- For a COMPUTED TABLE, assign a DataFrame to `result` (or end with a bare \
+DataFrame). It goes to the Data Preview panel (A).
+- You may produce BOTH a `fig` and a `result` in one call; each lands in its \
+own panel.
 - Use `print(...)` for any text/numbers you want to reason over. The tool \
-result's `note` is what you read (printed output or the error trace); the \
-figure/table are shown to the user, not returned to you as data.
+result's `note` is what you read (printed output, errors, and which panels were \
+updated); the figure/table data are shown to the user, not returned to you.
 
-3. FEATURE THE CHART. If the user asks for a big / hero / full-screen plot, call \
-`feature_chart()` after plotting to expand the Chart panel to fill the app.
+2. WRITE AN ANALYSIS into the Summary panel (C) via `write_summary(markdown)`. \
+Pass markdown (headings, bullets, a short narrative of your findings). Use this \
+for insights/conclusions in prose -- not for charts or tables.
+
+3. REARRANGE THE PANELS via `arrange_panels(mosaic)`. The mosaic is a small grid \
+of the panel letters A (Data Preview) / B (Chart) / C (Summary); each letter's \
+cells must form a rectangle. Examples: "AC\\nBB" (preview and summary on top, \
+chart wide below -- the default), "B" (chart full-screen), "BB\\nAC" (chart wide \
+on top, preview and summary below), "A\\nB\\nC" (stacked). Use ONLY A/B/C.
+
+4. DRIVE THE APP. To load a dataset from a URL, call \
+`set_app_input("dataset_url", "<url>")` then `run_app()` -- this sets the app's \
+input and re-runs the deterministic app. You CANNOT set the file input from \
+chat; if the user has a local file, tell them to use the Upload button on the \
+left, then click Run (or ask you to run).
 
 Workflow: when a dataset is loaded, inspect its schema first; run focused code \
-and give a short, concrete answer grounded in the results. If code errors, read \
-the traceback and fix it. Don't describe a chart you didn't actually create. \
-Keep replies concise.
+and give a short, concrete answer grounded in the results. Put charts, tables, \
+and summaries into the panels; keep the chat reply itself concise. If code \
+errors, read the traceback and fix it. Don't describe output you didn't actually \
+create.
 
 If no dataset is loaded and the user just wants to chat, help them get started: \
 offer to load a URL for them (set_app_input + run_app), invite them to upload a \
-CSV/Excel file, or plot demo data on request."""
+CSV/Excel file, or render demo data on request."""
 
 
 def _thread_id(config: RunnableConfig) -> str:
@@ -87,12 +116,13 @@ def _thread_id(config: RunnableConfig) -> str:
 
 @tool
 def run_analysis(code: str, config: RunnableConfig) -> str:
-    """Run Python (pandas/plotly) and render its output into the app.
+    """Run Python (pandas/plotly) and render its output into the app's panels.
 
-    Assign a chart to `fig` and it is placed into the app's Chart panel; assign a
-    table to `result` and it shows inline in the chat; use print() for text.
-    Returns a short note (printed output or error) for you to reason over -- not
-    the figure data.
+    Assign a plotly figure to `fig` and it is placed into the Chart panel (B);
+    assign a DataFrame to `result` and it is placed into the Data Preview panel
+    (A). You may produce both in one call. Use print() for text you want to
+    reason over. Returns a short note (printed output, errors, and which panels
+    were updated) -- never the figure/table data.
     """
     tid = _thread_id(config)
     df = current_dataframe(tid)
@@ -107,26 +137,64 @@ def run_analysis(code: str, config: RunnableConfig) -> str:
     if r.get("stdout"):
         note_parts.append("Printed output:\n" + r["stdout"])
 
-    # A produced FIGURE goes to the app's Chart panel (not inline in the chat):
-    # emit a set_output frame carrying the plotly dict, which fast_dash renders
-    # through the Chart slot's Graph transform and pushes per-session.
+    # Route each produced artifact to its panel via a set_output frame. The frame
+    # value stays a raw Python object (a plotly dict / a DataFrame); fast_dash
+    # transforms it through the TARGET slot's component server-side and pushes it
+    # per session. The model-facing note never carries the figure/table data.
+    rendered = []
     if r.get("figure"):
         try:
             fig_dict = json.loads(r["figure"])  # plotly JSON string -> dict
             emit_frame({"type": "set_output", "slot": CHART_SLOT, "value": fig_dict})
-            note_parts.append("Rendered a chart in the Chart panel.")
+            rendered.append("a chart in the Chart panel")
         except (json.JSONDecodeError, TypeError, ValueError):
             note_parts.append("Produced a figure but could not render it.")
+    if r.get("table"):
+        # Reconstruct a DataFrame; the Table slot's transform runs
+        # DataFrame.to_dict("records") -> DataTable.data (verified empirically).
+        table_df = pd.DataFrame(r["table"]["records"])
+        emit_frame({"type": "set_output", "slot": PREVIEW_SLOT, "value": table_df})
+        rendered.append("a table in the Data Preview panel")
+
+    if rendered:
+        if len(rendered) == 1:
+            note_parts.append("Rendered %s." % rendered[0])
+        else:
+            note_parts.append("Rendered " + " and ".join(rendered) + ".")
 
     note = "\n\n".join(note_parts) or "Ran with no printed output."
+    # Only the short note goes back to the model -- charts and tables are pushed
+    # to the app's panels, never returned here.
+    return json.dumps({"note": note})
 
-    # The note never carries the figure JSON (charts are pushed to the panel, not
-    # returned to the model). A table is passed through so the inline extractor
-    # can render it in the chat.
-    payload = {"note": note}
-    if r.get("table"):
-        payload["table"] = r["table"]  # {"records": [...], "shape": [...]}
-    return json.dumps(payload)
+
+@tool
+def write_summary(markdown: str) -> str:
+    """Write a summary/insights (markdown) into the app's Summary panel (C).
+
+    Use for a written analysis in prose -- findings, conclusions, a short
+    narrative -- not for charts or tables. Pass markdown (headings, bullets,
+    text); it renders in the Summary panel, not inline in the chat.
+    """
+    emit_frame({"type": "set_output", "slot": SUMMARY_SLOT, "value": markdown})
+    return "Wrote the summary into the Summary panel."
+
+
+@tool
+def arrange_panels(mosaic: str) -> str:
+    """Rearrange the app's three output panels into a layout (mosaic).
+
+    The mosaic is a small text grid: rows separated by newlines, each cell a
+    panel letter -- A = Data Preview, B = Chart, C = Summary. Each letter's cells
+    must form a filled rectangle, and letters must be among A/B/C (you can drop a
+    panel by omitting its letter, but cannot invent new ones). Examples:
+    "AC\\nBB" (preview and summary on top, chart wide below -- the default),
+    "B" (chart full-screen), "BB\\nAC" (chart wide on top, preview and summary
+    below), "A\\nB\\nC" (stacked). fast_dash validates the mosaic and refuses an
+    invalid one with a note -- use only A/B/C.
+    """
+    emit_frame({"type": "set_layout", "mosaic": mosaic})
+    return "Rearranged the panels to layout: %s" % mosaic
 
 
 @tool
@@ -151,44 +219,6 @@ def run_app() -> str:
     return "Ran the app on the current inputs."
 
 
-@tool
-def feature_chart() -> str:
-    """Expand the Chart panel to fill the app (a big / hero / full-screen plot).
-
-    Only use when the user explicitly wants a large or full-screen chart; emits a
-    set_layout frame that gives the Chart slot the whole layout.
-    """
-    emit_frame({"type": "set_layout", "mosaic": CHART_SLOT})
-    return "Featured the Chart panel full-screen."
-
-
-class AnalysisDisplay:
-    """Turn a ``run_analysis`` TABLE result into an inline table for the chat.
-
-    A custom langstage extractor: fast_dash's chat renderer dispatches on
-    ``extracted_type == "display_inline"`` and reads the envelope this returns
-    (``display_type`` + ``data`` + ``title``). Figures are NOT handled here --
-    they go to the app's Chart panel via a ``set_output`` frame; only tables
-    render inline (as a list of records).
-    """
-
-    tool_name = "run_analysis"
-    extracted_type = "display_inline"
-
-    def extract(self, content):
-        try:
-            payload = json.loads(content)
-        except (json.JSONDecodeError, TypeError, ValueError):
-            return None
-        if not isinstance(payload, dict):
-            return None
-        table = payload.get("table")
-        if table and table.get("records"):
-            return {"display_type": "table",
-                    "data": table["records"], "title": "Table"}
-        return None
-
-
 def build_graph(model=None):
     if model is None:
         from langchain_openai import ChatOpenAI
@@ -204,7 +234,8 @@ def build_graph(model=None):
     from langgraph.prebuilt import create_react_agent
 
     return create_react_agent(
-        model, [run_analysis, set_app_input, run_app, feature_chart],
+        model,
+        [run_analysis, write_summary, arrange_panels, set_app_input, run_app],
         prompt=SYSTEM_PROMPT)
 
 
@@ -220,21 +251,24 @@ def make_analyst():
     if not has_llm():
         return _make_stub_analyst()
 
-    bridge = build_chat_callback(build_graph(), extractors=[AnalysisDisplay()])
+    # No custom extractors: charts / tables / summaries go to the app's panels
+    # (set_output frames), not inline in the chat. The langstage default
+    # extractors still apply for the agent's own typed events.
+    bridge = build_chat_callback(build_graph())
 
     async def analyst(query, ctx):
         tid = getattr(ctx, "thread_id", None) or "default"
         inputs = getattr(ctx, "inputs", None) or {}
         df = data.get_dataframe(tid, inputs.get(UPLOAD_ID), inputs.get(URL_ID))
         # No gate on a loaded dataset: the user can chat immediately. When there's
-        # no data, the agent can still drive the app (load a URL) or plot demo
+        # no data, the agent can still drive the app (load a URL) or render demo
         # data; a loaded df is surfaced via its schema.
         if df is not None:
             prompt = f"[Dataset loaded: {schema_text(df)}]\n\n{query}"
         else:
             prompt = ("[No dataset is loaded yet -- `df` is not defined. You can "
                       "load one for the user with set_app_input('dataset_url', <url>) "
-                      "then run_app(), run code to plot example/synthetic data, or "
+                      "then run_app(), run code to render example/synthetic data, or "
                       "invite them to upload a CSV/Excel file via the Upload "
                       "button.]\n\n" + query)
         try:

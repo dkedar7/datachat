@@ -1,8 +1,12 @@
-"""The agent: run_analysis + drive tools emit frames; the wiring and extractor.
+"""The agent: run_analysis + write_summary + arrange_panels + drive tools emit
+frames; plus the graph/make_analyst wiring.
 
-Charts render into the app's Chart panel (a ``set_output`` frame emitted through
-``fast_dash.agent_tools``), tables render inline in the chat (a ``display_inline``
-extraction), and the drive tools set inputs / run the app.
+The analyst has FULL control of the app's three output panels: charts render into
+the Chart panel (B), computed tables into the Data Preview panel (A), and written
+summaries into the Summary panel (C) -- each a ``set_output`` frame emitted
+through ``fast_dash.agent_tools``. ``arrange_panels`` re-mosaics the panels (a
+``set_layout`` frame), and the drive tools set inputs / run the app. Nothing
+renders inline in the chat any more (no custom extractor).
 """
 
 import json
@@ -14,21 +18,20 @@ from fast_dash.agent_tools import drain_frames, turn_buffer
 from analyst import agent, data
 from analyst.agent import (
     CHART_SLOT,
-    AnalysisDisplay,
+    PREVIEW_SLOT,
+    SUMMARY_SLOT,
+    arrange_panels,
     build_graph,
-    feature_chart,
     make_analyst,
     run_analysis,
     run_app,
     set_app_input,
+    write_summary,
 )
 
 
-# --- CHART_SLOT ----------------------------------------------------------- #
-def test_chart_slot_is_the_graph_output_index_1():
-    """Outputs are [Table, Graph, Markdown]; slot letters go by output order, so
-    the Graph (chart) is the second output -> "B". Verified against a real app's
-    resolver so the constant tracks fast_dash's slot mapping."""
+# --- slot constants map to the output indices ----------------------------- #
+def _build_app():
     from fast_dash import FastDash, Graph, Markdown, Table
 
     def explore(x: str = ""):
@@ -37,17 +40,53 @@ def test_chart_slot_is_the_graph_output_index_1():
     def chatfn(query, ctx):
         yield "hi"
 
-    app = FastDash(
+    return FastDash(
         callback_fn=explore, outputs=[Table, Graph, Markdown],
         output_labels=["Data preview", "Chart", "Summary"], mosaic="AC\nBB",
         title="T", chat=chatfn,
         chat_tools=("read_app", "set_input", "run_app", "set_output", "set_layout"))
-    assert app.output_tags[1] == "Graph"            # the Graph is output index 1
-    assert app._resolve_slot(CHART_SLOT) == 1       # ...which CHART_SLOT addresses
-    assert CHART_SLOT == "B"
 
 
-# --- run_analysis emits a chart into the app panel ------------------------ #
+def test_slot_constants_map_to_table_graph_markdown_indices():
+    """Outputs are [Table, Graph, Markdown]; slot letters go by output order, so
+    A=Table (0, Data preview), B=Graph (1, Chart), C=Markdown (2, Summary).
+    Verified against a real app's resolver so the constants track fast_dash's slot
+    mapping."""
+    app = _build_app()
+    assert (PREVIEW_SLOT, CHART_SLOT, SUMMARY_SLOT) == ("A", "B", "C")
+    assert app.output_tags[0] is None                # a Table (no tag)
+    assert app.output_tags[1] == "Graph"
+    assert app.output_tags[2] == "Text"              # Markdown carries tag "Text"
+    assert app._resolve_slot(PREVIEW_SLOT) == 0
+    assert app._resolve_slot(CHART_SLOT) == 1
+    assert app._resolve_slot(SUMMARY_SLOT) == 2
+
+
+# --- value-shape sanity: pin the shapes to fast_dash's transforms --------- #
+def test_set_output_value_shapes_match_fast_dash_transforms():
+    """Build a real app and confirm the exact (prop, value) each slot's transform
+    produces for the values the tools emit: a DataFrame -> Table.data (records),
+    a markdown string -> Markdown.children, a plotly dict -> Graph.figure."""
+    app = _build_app()
+
+    # Table (A, index 0): a DataFrame -> to_dict("records") on prop "data".
+    _id, prop, val = app._sidecar_set_output(0, pd.DataFrame({"g": ["a"], "v": [1]}))
+    assert prop == "data"
+    assert val == [{"g": "a", "v": 1}]
+
+    # Graph (B, index 1): a plotly figure dict passes through on prop "figure".
+    fig_dict = {"data": [{"type": "bar", "x": ["a"], "y": [1]}], "layout": {}}
+    _id, prop, val = app._sidecar_set_output(1, fig_dict)
+    assert prop == "figure"
+    assert isinstance(val, dict) and "data" in val and "layout" in val
+
+    # Markdown (C, index 2): a plain string passes through on prop "children".
+    _id, prop, val = app._sidecar_set_output(2, "**hi**")
+    assert prop == "children"
+    assert val == "**hi**"
+
+
+# --- run_analysis: a chart -> the Chart panel (B) ------------------------- #
 def test_run_analysis_emits_a_set_output_chart_frame():
     data._CACHE["ra1"] = ("h", pd.DataFrame({"g": ["a", "b"], "v": [1, 2]}))
     with turn_buffer():
@@ -63,10 +102,9 @@ def test_run_analysis_emits_a_set_output_chart_frame():
     assert isinstance(value, dict) and "data" in value and "layout" in value  # plotly dict
 
     payload = json.loads(out)
-    assert list(payload.keys())[0] == "note"        # note leads
+    assert list(payload.keys()) == ["note"]         # only the note goes back
     assert "Chart panel" in payload["note"]
     assert "figure" not in payload                  # the figure is NOT returned
-    assert "data" not in payload["note"] or '"data"' not in payload["note"]  # no fig JSON
 
 
 def test_run_analysis_note_does_not_dump_the_figure_json():
@@ -82,18 +120,50 @@ def test_run_analysis_note_does_not_dump_the_figure_json():
     assert len(note) < 200
 
 
-def test_run_analysis_table_stays_inline_no_chart_frame():
+# --- run_analysis: a computed table -> the Data Preview panel (A) --------- #
+def test_run_analysis_emits_a_table_into_the_preview_panel():
     data._CACHE["ra2"] = ("h", pd.DataFrame({"g": ["a", "b", "a"], "v": [1, 2, 3]}))
     with turn_buffer():
         out = run_analysis.invoke(
             {"code": "print('rows', len(df)); result = df.groupby('g')['v'].sum().reset_index()"},
             {"configurable": {"thread_id": "ra2"}})
         frames = drain_frames()
-    assert not any(f.get("type") == "set_output" for f in frames)  # tables aren't charts
+
+    set_outputs = [f for f in frames if f.get("type") == "set_output"]
+    assert len(set_outputs) == 1
+    frame = set_outputs[0]
+    assert frame["slot"] == PREVIEW_SLOT
+    # The frame value is a DataFrame (fast_dash transforms it to records server-side).
+    assert isinstance(frame["value"], pd.DataFrame)
+    assert list(frame["value"].columns) == ["g", "v"]
+    assert len(frame["value"]) == 2
+
     payload = json.loads(out)
-    assert list(payload.keys())[0] == "note"
+    assert list(payload.keys()) == ["note"]
     assert "rows 3" in payload["note"]
-    assert payload["table"]["shape"][0] == 2        # table passed through for the extractor
+    assert "Data Preview panel" in payload["note"]
+    assert "table" not in payload                    # the table data is NOT returned
+
+
+# --- run_analysis: BOTH a chart and a table -> two panels ----------------- #
+def test_run_analysis_routes_both_chart_and_table_to_their_panels():
+    data._CACHE["ra3"] = ("h", pd.DataFrame({"g": ["a", "b", "a"], "v": [1, 2, 3]}))
+    with turn_buffer():
+        out = run_analysis.invoke(
+            {"code": ("result = df.groupby('g')['v'].sum().reset_index()\n"
+                      "fig = px.bar(result, x='g', y='v')")},
+            {"configurable": {"thread_id": "ra3"}})
+        frames = drain_frames()
+
+    set_outputs = [f for f in frames if f.get("type") == "set_output"]
+    slots = {f["slot"] for f in set_outputs}
+    assert slots == {CHART_SLOT, PREVIEW_SLOT}       # one frame per panel
+    by_slot = {f["slot"]: f["value"] for f in set_outputs}
+    assert isinstance(by_slot[CHART_SLOT], dict)     # a plotly figure dict
+    assert isinstance(by_slot[PREVIEW_SLOT], pd.DataFrame)
+
+    note = json.loads(out)["note"]
+    assert "Chart panel" in note and "Data Preview panel" in note
 
 
 def test_run_analysis_emits_a_chart_without_a_dataset():
@@ -113,7 +183,7 @@ def test_run_analysis_emits_a_chart_without_a_dataset():
 
 def test_run_analysis_reports_a_missing_df_reference_as_an_error():
     """Referencing `df` with no dataset yields a traceback the agent can act on
-    (fix by generating data), not a canned refusal, and emits no chart."""
+    (fix by generating data), not a canned refusal, and emits no output frame."""
     with turn_buffer():
         out = run_analysis.invoke({"code": "df.head()"},
                                   {"configurable": {"thread_id": "no-data-here-2"}})
@@ -123,7 +193,36 @@ def test_run_analysis_reports_a_missing_df_reference_as_an_error():
     assert not any(f.get("type") == "set_output" for f in frames)
 
 
-# --- drive tools: set_app_input / run_app / feature_chart ----------------- #
+# --- write_summary -> the Summary panel (C) ------------------------------- #
+def test_write_summary_emits_a_set_output_markdown_frame():
+    with turn_buffer():
+        ack = write_summary.invoke({"markdown": "# Findings\n\n- Sales rose 12%."})
+        frames = drain_frames()
+    set_outputs = [f for f in frames if f.get("type") == "set_output"]
+    assert len(set_outputs) == 1
+    frame = set_outputs[0]
+    assert frame["slot"] == SUMMARY_SLOT
+    assert frame["value"] == "# Findings\n\n- Sales rose 12%."   # a markdown string
+    assert "Summary panel" in ack
+
+
+# --- arrange_panels -> a set_layout frame with any mosaic ----------------- #
+def test_arrange_panels_emits_a_set_layout_frame_with_the_mosaic():
+    with turn_buffer():
+        ack = arrange_panels.invoke({"mosaic": "BB\nAC"})
+        frames = drain_frames()
+    assert frames == [{"type": "set_layout", "mosaic": "BB\nAC"}]
+    assert "BB\nAC" in ack
+
+
+def test_arrange_panels_passes_a_single_letter_mosaic_through():
+    with turn_buffer():
+        arrange_panels.invoke({"mosaic": "B"})
+        frames = drain_frames()
+    assert frames == [{"type": "set_layout", "mosaic": "B"}]
+
+
+# --- drive tools: set_app_input / run_app (unchanged) --------------------- #
 def test_set_app_input_emits_a_set_input_frame():
     with turn_buffer():
         ack = set_app_input.invoke({"name": "dataset_url", "value": "http://x/y.csv"})
@@ -141,28 +240,34 @@ def test_run_app_emits_a_run_app_frame():
     assert "Ran the app" in ack
 
 
-def test_feature_chart_emits_a_set_layout_frame_for_the_chart_slot():
-    with turn_buffer():
-        feature_chart.invoke({})
-        frames = drain_frames()
-    assert frames == [{"type": "set_layout", "mosaic": CHART_SLOT}]
+# --- AnalysisDisplay is gone; no custom extractor is wired ---------------- #
+def test_analysis_display_extractor_is_removed():
+    """Tables now go to the Data Preview panel, not inline -- the custom
+    extractor and its class no longer exist."""
+    assert not hasattr(agent, "AnalysisDisplay")
 
 
-# --- AnalysisDisplay extractor (table-only) ------------------------------- #
-def test_extract_table_envelope_carries_records():
-    table = {"records": [{"g": "a", "v": 1}], "shape": [1, 2]}
-    env = AnalysisDisplay().extract(json.dumps({"note": "ok", "table": table}))
-    assert env["display_type"] == "table"
-    assert env["data"] == [{"g": "a", "v": 1}]       # a list of records
+def test_make_analyst_wires_no_custom_extractors(monkeypatch):
+    """build_chat_callback is called with only the graph -- no extractors kwarg --
+    so the langstage default extractors apply and nothing renders inline."""
+    seen = {}
 
+    def _fake_bridge(graph, *args, **kwargs):
+        seen["args"] = args
+        seen["kwargs"] = kwargs
 
-def test_extract_ignores_figures_and_note_only():
-    # Figures go to the app panel, not inline -- the extractor never handles them.
-    fig_str = json.dumps({"data": [{"type": "bar"}], "layout": {}})
-    assert AnalysisDisplay().extract(json.dumps({"note": "ok", "figure": fig_str})) is None
-    assert AnalysisDisplay().extract("not json at all") is None
-    assert AnalysisDisplay().extract(json.dumps({"note": "just text"})) is None
-    assert AnalysisDisplay().extract(json.dumps(["a", "list"])) is None
+        async def _bridge(prompt, ctx):
+            if False:
+                yield None
+
+        return _bridge
+
+    monkeypatch.setattr("analyst.agent.has_llm", lambda: True)
+    monkeypatch.setattr("analyst.agent.build_graph", lambda: object())
+    monkeypatch.setattr("analyst.agent.build_chat_callback", _fake_bridge)
+    make_analyst()
+    assert seen["args"] == ()                        # no positional extractors
+    assert "extractors" not in seen["kwargs"]        # and no extractors kwarg
 
 
 # --- graph + make_analyst wiring ------------------------------------------ #

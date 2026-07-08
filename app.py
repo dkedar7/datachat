@@ -3,10 +3,13 @@
 The app itself is a small upload/preview surface; the star is the **Data
 Analyst** in the left sidebar: a LangGraph + OpenRouter agent that is a full
 complement (or replacement) for the input form. It can drive the form itself --
-set ``dataset_url`` and run the app -- and it can plot *anything* into the app's
-main-area **Chart** panel (not just inline in the chat), by running pandas/plotly
-code in fast_dash's built-in sandbox and pushing the figure through fast_dash's
-output pipeline.
+set ``dataset_url`` and run the app -- and it has FULL control of the app's three
+output panels: it renders a chart into the **Chart** panel (B), a computed table
+into the **Data Preview** panel (A), and a written analysis into the **Summary**
+panel (C), and it can rearrange the panels into any layout. It runs pandas/plotly
+code in fast_dash's built-in sandbox and pushes each artifact through fast_dash's
+output pipeline (a ``set_output`` frame per panel, a ``set_layout`` frame to
+re-mosaic).
 """
 
 from __future__ import annotations
@@ -24,7 +27,8 @@ def explore(dataset_file: Upload, dataset_url: str = ""):
 
     Upload a CSV/Excel file, or paste a link to one, then click **Run**. Or just
     open the **Data Analyst** in the left sidebar: it can set ``dataset_url`` and
-    run the app for you, and plot any figure into the Chart panel below.
+    run the app for you, render a chart / table / summary into these three panels,
+    and rearrange them.
 
     Args:
         dataset_file: A CSV or Excel file to analyze (use the upload button).
@@ -62,10 +66,11 @@ def build_app() -> FastDash:
         chat=make_analyst(),
         chat_title="Data Analyst",
         # The analyst is a full complement to the form: it can set inputs and run
-        # the app (set_input/run_app), render a figure into the Chart panel
-        # (set_output), and feature it full-screen on request (set_layout).
+        # the app (set_input/run_app), render into all three output panels --
+        # chart (B), table (A), summary (C) -- via set_output, and rearrange them
+        # into any mosaic via set_layout.
         chat_tools=("read_app", "set_input", "run_app", "set_output", "set_layout"),
-        chat_placeholder="Ask me to load data, run the app, or plot anything.",
+        chat_placeholder="Ask me to load data, run the app, or render any chart / table / summary.",
     )
 
 

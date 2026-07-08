@@ -23,6 +23,7 @@ from analyst.agent import (
     arrange_panels,
     build_graph,
     make_analyst,
+    load_dataset,
     run_analysis,
     run_app,
     set_app_input,
@@ -238,6 +239,41 @@ def test_run_app_emits_a_run_app_frame():
         frames = drain_frames()
     assert frames == [{"type": "run_app"}]
     assert "Ran the app" in ack
+
+
+def test_load_dataset_makes_df_available_in_the_same_turn(monkeypatch):
+    """The load+plot-in-one-turn fix: load_dataset caches the df immediately (so a
+    same-turn run_analysis sees it) AND fills the preview/summary panels + the URL
+    input -- without run_app, so no Run-reset can race the panels."""
+    df = pd.DataFrame({"a": [1, 2, 3], "b": [4, 5, 6]})
+    monkeypatch.setattr("analyst.data.load_from_url", lambda url: df)
+    tid = "loadds1"
+
+    with turn_buffer():
+        ack = load_dataset.invoke({"url": "http://example.com/data.csv"},
+                                  {"configurable": {"thread_id": tid}})
+        frames = drain_frames()
+
+    # The df is now cached for this thread -> run_analysis (same tid) will see it.
+    assert data.current_dataframe(tid) is not None
+    assert "Loaded 3 rows" in ack
+
+    # It filled the URL input + the preview (A) and summary (C) panels.
+    assert {"type": "set_input", "name": "dataset_url",
+            "value": "http://example.com/data.csv"} in frames
+    set_outputs = {f["slot"]: f["value"] for f in frames if f.get("type") == "set_output"}
+    assert PREVIEW_SLOT in set_outputs and SUMMARY_SLOT in set_outputs
+    assert isinstance(set_outputs[PREVIEW_SLOT], pd.DataFrame)      # -> Table.data
+    assert isinstance(set_outputs[SUMMARY_SLOT], str)              # -> Markdown
+    assert not any(f.get("type") == "run_app" for f in frames)     # no run_app race
+
+    # Same-turn plot: run_analysis now has `df` and charts into panel B.
+    with turn_buffer():
+        run_analysis.invoke({"code": "fig = px.scatter(df, x='a', y='b')"},
+                            {"configurable": {"thread_id": tid}})
+        chart_frames = drain_frames()
+    assert any(f.get("type") == "set_output" and f.get("slot") == CHART_SLOT
+               for f in chart_frames)
 
 
 # --- AnalysisDisplay is gone; no custom extractor is wired ---------------- #

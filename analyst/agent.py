@@ -93,11 +93,14 @@ cells must form a rectangle. Examples: "AC\\nBB" (preview and summary on top, \
 chart wide below -- the default), "B" (chart full-screen), "BB\\nAC" (chart wide \
 on top, preview and summary below), "A\\nB\\nC" (stacked). Use ONLY A/B/C.
 
-4. DRIVE THE APP. To load a dataset from a URL, call \
-`set_app_input("dataset_url", "<url>")` then `run_app()` -- this sets the app's \
-input and re-runs the deterministic app. You CANNOT set the file input from \
-chat; if the user has a local file, tell them to use the Upload button on the \
-left, then click Run (or ask you to run).
+4. LOAD DATA / DRIVE THE APP. To load a dataset from a URL, call \
+`load_dataset("<url>")` -- it fetches the data, fills the Data Preview and \
+Summary panels, and makes `df` available so you can plot it with `run_analysis` \
+IN THE SAME REPLY. (Prefer this over set_app_input for loading: set_app_input \
+only fills the input box, so `df` would not be ready to plot until a later \
+turn.) You CANNOT load a local file from chat; ask the user to use the Upload \
+button on the left, then Run. You may also set other inputs with \
+`set_app_input(name, value)` and re-run the deterministic app with `run_app()`.
 
 Workflow: when a dataset is loaded, inspect its schema first; run focused code \
 and give a short, concrete answer grounded in the results. Put charts, tables, \
@@ -106,8 +109,8 @@ errors, read the traceback and fix it. Don't describe output you didn't actually
 create.
 
 If no dataset is loaded and the user just wants to chat, help them get started: \
-offer to load a URL for them (set_app_input + run_app), invite them to upload a \
-CSV/Excel file, or render demo data on request."""
+offer to load a URL for them (load_dataset), invite them to upload a CSV/Excel \
+file, or render demo data on request."""
 
 
 def _thread_id(config: RunnableConfig) -> str:
@@ -219,6 +222,36 @@ def run_app() -> str:
     return "Ran the app on the current inputs."
 
 
+@tool
+def load_dataset(url: str, config: RunnableConfig) -> str:
+    """Load a dataset from a URL and show its preview + summary in the app.
+
+    Fetches the CSV/Excel/JSON/Parquet at `url`, makes it available as `df`, and
+    fills the Data Preview (A) and Summary (C) panels. Crucially, the data is
+    ready to plot IN THE SAME REPLY: call `run_analysis` right after to chart it.
+    Use this to load data from a link; for a local file, ask the user to use the
+    Upload button. (This is the preferred way to load a URL -- it loads `df` for
+    you, unlike set_app_input which only fills the input box.)
+    """
+    tid = _thread_id(config)
+    try:
+        df = data.get_dataframe(tid, None, url)   # loads + caches for this thread
+    except Exception as exc:                       # noqa: BLE001 -- report, don't crash
+        return "Could not load a dataset from that URL (%s)." % type(exc).__name__
+    if df is None:
+        return "Could not load a dataset from that URL -- check the link."
+    # Reflect the URL in the app's input, and populate the preview + summary
+    # panels directly (via set_output) so a run_app + Run-reset can't race the
+    # panels while the agent plots into the Chart panel in the same turn.
+    emit_frame({"type": "set_input", "name": URL_ID, "value": url})
+    emit_frame({"type": "set_output", "slot": PREVIEW_SLOT, "value": df.head(20)})
+    emit_frame({"type": "set_output", "slot": SUMMARY_SLOT,
+                "value": data.summary_markdown(df)})
+    return ("Loaded %d rows x %d columns; filled the Data Preview and Summary "
+            "panels. `df` is ready -- call run_analysis to plot it."
+            % (df.shape[0], df.shape[1]))
+
+
 def build_graph(model=None):
     if model is None:
         from langchain_openai import ChatOpenAI
@@ -235,7 +268,8 @@ def build_graph(model=None):
 
     return create_react_agent(
         model,
-        [run_analysis, write_summary, arrange_panels, set_app_input, run_app],
+        [run_analysis, write_summary, arrange_panels,
+         load_dataset, set_app_input, run_app],
         prompt=SYSTEM_PROMPT)
 
 

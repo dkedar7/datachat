@@ -12,6 +12,8 @@ import hashlib
 import io
 
 import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
 
 from .config import MAX_ROWS
 
@@ -107,3 +109,77 @@ def summary_markdown(df: pd.DataFrame) -> str:
         lines.append(f"| ... | | | *(+{df.shape[1] - 40} more columns)* |")
     lines.append("\n*Ask the **Data Analyst** in the left sidebar for any chart or insight.*")
     return "\n".join(lines)
+
+
+# --- default overview chart ----------------------------------------------- #
+_OVERVIEW_TITLE = "Overview (ask the analyst to plot anything)"
+
+
+def empty_chart() -> go.Figure:
+    """A placeholder figure shown in the Chart panel before any data is loaded.
+
+    Invites the user to load a dataset and ask the analyst for a plot; the
+    analyst renders real figures into this same slot via ``set_output``.
+    """
+    fig = go.Figure()
+    fig.update_layout(
+        title="No dataset yet -- load one, or ask the analyst to plot anything",
+        xaxis={"visible": False},
+        yaxis={"visible": False},
+        annotations=[{
+            "text": ("Upload a CSV/Excel file or paste a link on the left, then ask "
+                     "the Data Analyst<br>for any chart -- it renders right here."),
+            "xref": "paper", "yref": "paper", "x": 0.5, "y": 0.5,
+            "showarrow": False, "align": "center",
+        }],
+    )
+    return fig
+
+
+def overview_chart(df: pd.DataFrame) -> go.Figure:
+    """A lightweight default chart summarizing ``df`` for the Chart panel.
+
+    Picks the first usable column: a histogram of the first numeric column, else
+    a bar of the first categorical column's top value counts. Guards empty /
+    all-NaN / single-column frames, always returning a titled figure (never
+    raising) so the app's Chart slot is never blank.
+    """
+    try:
+        if df is None or df.shape[0] == 0 or df.shape[1] == 0:
+            return _overview_message("The dataset is empty.")
+
+        # Prefer the first numeric column that has at least one real value.
+        for col in df.columns:
+            s = pd.to_numeric(df[col], errors="coerce") if df[col].dtype == object \
+                else df[col]
+            if pd.api.types.is_numeric_dtype(s) and s.notna().any():
+                fig = px.histogram(df, x=col, title=_OVERVIEW_TITLE)
+                fig.update_layout(xaxis_title=str(col), yaxis_title="Count")
+                return fig
+
+        # No numeric column: bar the first column that has any non-null values.
+        for col in df.columns:
+            counts = df[col].dropna().astype(str).value_counts().head(20)
+            if not counts.empty:
+                fig = px.bar(x=counts.index, y=counts.values, title=_OVERVIEW_TITLE)
+                fig.update_layout(xaxis_title=str(col), yaxis_title="Count")
+                return fig
+
+        return _overview_message("No plottable (non-empty) column found.")
+    except Exception:  # noqa: BLE001 -- an overview must never break the app
+        return _overview_message("Could not build an overview chart.")
+
+
+def _overview_message(text: str) -> go.Figure:
+    fig = go.Figure()
+    fig.update_layout(
+        title=_OVERVIEW_TITLE,
+        xaxis={"visible": False},
+        yaxis={"visible": False},
+        annotations=[{
+            "text": text + "<br>Ask the Data Analyst to plot anything.",
+            "xref": "paper", "yref": "paper", "x": 0.5, "y": 0.5,
+            "showarrow": False, "align": "center",
+        }],
+    )
+    return fig

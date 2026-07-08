@@ -1,72 +1,165 @@
-"""The agent: run_analysis tool, the AnalysisDisplay extractor, and wiring."""
+"""The agent: run_analysis + drive tools emit frames; the wiring and extractor.
+
+Charts render into the app's Chart panel (a ``set_output`` frame emitted through
+``fast_dash.agent_tools``), tables render inline in the chat (a ``display_inline``
+extraction), and the drive tools set inputs / run the app.
+"""
 
 import json
 
 import pandas as pd
 
+from fast_dash.agent_tools import drain_frames, turn_buffer
+
 from analyst import agent, data
-from analyst.agent import AnalysisDisplay, build_graph, make_analyst, run_analysis
+from analyst.agent import (
+    CHART_SLOT,
+    AnalysisDisplay,
+    build_graph,
+    feature_chart,
+    make_analyst,
+    run_analysis,
+    run_app,
+    set_app_input,
+)
 
 
-# --- run_analysis tool ---------------------------------------------------- #
-def test_run_analysis_payload_note_leads_with_a_figure():
+# --- CHART_SLOT ----------------------------------------------------------- #
+def test_chart_slot_is_the_graph_output_index_1():
+    """Outputs are [Table, Graph, Markdown]; slot letters go by output order, so
+    the Graph (chart) is the second output -> "B". Verified against a real app's
+    resolver so the constant tracks fast_dash's slot mapping."""
+    from fast_dash import FastDash, Graph, Markdown, Table
+
+    def explore(x: str = ""):
+        return None, None, None
+
+    def chatfn(query, ctx):
+        yield "hi"
+
+    app = FastDash(
+        callback_fn=explore, outputs=[Table, Graph, Markdown],
+        output_labels=["Data preview", "Chart", "Summary"], mosaic="AC\nBB",
+        title="T", chat=chatfn,
+        chat_tools=("read_app", "set_input", "run_app", "set_output", "set_layout"))
+    assert app.output_tags[1] == "Graph"            # the Graph is output index 1
+    assert app._resolve_slot(CHART_SLOT) == 1       # ...which CHART_SLOT addresses
+    assert CHART_SLOT == "B"
+
+
+# --- run_analysis emits a chart into the app panel ------------------------ #
+def test_run_analysis_emits_a_set_output_chart_frame():
     data._CACHE["ra1"] = ("h", pd.DataFrame({"g": ["a", "b"], "v": [1, 2]}))
-    out = run_analysis.invoke({"code": "fig = px.bar(df, x='g', y='v')"},
-                              {"configurable": {"thread_id": "ra1"}})
+    with turn_buffer():
+        out = run_analysis.invoke({"code": "fig = px.bar(df, x='g', y='v')"},
+                                  {"configurable": {"thread_id": "ra1"}})
+        frames = drain_frames()
+
+    set_outputs = [f for f in frames if f.get("type") == "set_output"]
+    assert set_outputs, "expected a set_output frame carrying the chart"
+    frame = set_outputs[0]
+    assert frame["slot"] == CHART_SLOT
+    value = frame["value"]
+    assert isinstance(value, dict) and "data" in value and "layout" in value  # plotly dict
+
     payload = json.loads(out)
-    assert list(payload.keys())[0] == "note"          # note leads
-    assert isinstance(payload["figure"], str)         # plotly JSON string
-    assert "table" not in payload
+    assert list(payload.keys())[0] == "note"        # note leads
+    assert "Chart panel" in payload["note"]
+    assert "figure" not in payload                  # the figure is NOT returned
+    assert "data" not in payload["note"] or '"data"' not in payload["note"]  # no fig JSON
 
 
-def test_run_analysis_payload_carries_a_table():
+def test_run_analysis_note_does_not_dump_the_figure_json():
+    data._CACHE["ra1b"] = ("h", pd.DataFrame({"g": ["a", "b"], "v": [1, 2]}))
+    with turn_buffer():
+        out = run_analysis.invoke({"code": "fig = px.bar(df, x='g', y='v')"},
+                                  {"configurable": {"thread_id": "ra1b"}})
+        drain_frames()
+    note = json.loads(out)["note"]
+    # The model-facing note is a short ack, not a serialized plotly figure.
+    assert "plotly" not in note.lower()
+    assert '"marker"' not in note and '"xaxis"' not in note
+    assert len(note) < 200
+
+
+def test_run_analysis_table_stays_inline_no_chart_frame():
     data._CACHE["ra2"] = ("h", pd.DataFrame({"g": ["a", "b", "a"], "v": [1, 2, 3]}))
-    out = run_analysis.invoke(
-        {"code": "print('rows', len(df)); result = df.groupby('g')['v'].sum().reset_index()"},
-        {"configurable": {"thread_id": "ra2"}})
+    with turn_buffer():
+        out = run_analysis.invoke(
+            {"code": "print('rows', len(df)); result = df.groupby('g')['v'].sum().reset_index()"},
+            {"configurable": {"thread_id": "ra2"}})
+        frames = drain_frames()
+    assert not any(f.get("type") == "set_output" for f in frames)  # tables aren't charts
     payload = json.loads(out)
     assert list(payload.keys())[0] == "note"
     assert "rows 3" in payload["note"]
-    assert payload["table"]["shape"][0] == 2
+    assert payload["table"]["shape"][0] == 2        # table passed through for the extractor
 
 
-def test_run_analysis_runs_self_contained_code_without_a_dataset():
-    """No dataset loaded: run_analysis still runs code (e.g. synthetic/demo data)
-    instead of refusing -- so the agent can plot dummy data on request."""
-    out = run_analysis.invoke(
-        {"code": "fig = px.scatter(x=[1, 2, 3], y=[3, 1, 2], title='Demo')"},
-        {"configurable": {"thread_id": "no-data-here"}})
+def test_run_analysis_emits_a_chart_without_a_dataset():
+    """No dataset loaded: run_analysis still runs self-contained demo code (no hard
+    refusal) and emits a set_output chart from it."""
+    with turn_buffer():
+        out = run_analysis.invoke(
+            {"code": "fig = px.scatter(x=[1, 2, 3], y=[3, 1, 2], title='Demo')"},
+            {"configurable": {"thread_id": "no-data-here"}})
+        frames = drain_frames()
     payload = json.loads(out)
-    assert "No dataset" not in payload["note"]          # no hard refusal
-    assert isinstance(payload["figure"], str)           # the demo figure rendered
+    assert "No dataset" not in payload["note"]       # no hard refusal
+    set_outputs = [f for f in frames if f.get("type") == "set_output"]
+    assert set_outputs and set_outputs[0]["slot"] == CHART_SLOT
+    assert isinstance(set_outputs[0]["value"], dict)
 
 
 def test_run_analysis_reports_a_missing_df_reference_as_an_error():
     """Referencing `df` with no dataset yields a traceback the agent can act on
-    (fix by generating data), not a canned refusal."""
-    out = run_analysis.invoke({"code": "df.head()"},
-                              {"configurable": {"thread_id": "no-data-here-2"}})
+    (fix by generating data), not a canned refusal, and emits no chart."""
+    with turn_buffer():
+        out = run_analysis.invoke({"code": "df.head()"},
+                                  {"configurable": {"thread_id": "no-data-here-2"}})
+        frames = drain_frames()
     payload = json.loads(out)
     assert "Error" in payload["note"] and "df" in payload["note"]
-    assert "figure" not in payload
+    assert not any(f.get("type") == "set_output" for f in frames)
 
 
-# --- AnalysisDisplay extractor -------------------------------------------- #
-def test_extract_figure_envelope_carries_a_plotly_dict():
-    fig_str = json.dumps({"data": [{"type": "bar"}], "layout": {}})
-    env = AnalysisDisplay().extract(json.dumps({"note": "ok", "figure": fig_str}))
-    assert env["display_type"] == "figure"
-    assert isinstance(env["data"], dict) and "data" in env["data"]  # a plotly dict
+# --- drive tools: set_app_input / run_app / feature_chart ----------------- #
+def test_set_app_input_emits_a_set_input_frame():
+    with turn_buffer():
+        ack = set_app_input.invoke({"name": "dataset_url", "value": "http://x/y.csv"})
+        frames = drain_frames()
+    assert frames == [{"type": "set_input", "name": "dataset_url",
+                       "value": "http://x/y.csv"}]
+    assert "run_app" in ack
 
 
+def test_run_app_emits_a_run_app_frame():
+    with turn_buffer():
+        ack = run_app.invoke({})
+        frames = drain_frames()
+    assert frames == [{"type": "run_app"}]
+    assert "Ran the app" in ack
+
+
+def test_feature_chart_emits_a_set_layout_frame_for_the_chart_slot():
+    with turn_buffer():
+        feature_chart.invoke({})
+        frames = drain_frames()
+    assert frames == [{"type": "set_layout", "mosaic": CHART_SLOT}]
+
+
+# --- AnalysisDisplay extractor (table-only) ------------------------------- #
 def test_extract_table_envelope_carries_records():
     table = {"records": [{"g": "a", "v": 1}], "shape": [1, 2]}
     env = AnalysisDisplay().extract(json.dumps({"note": "ok", "table": table}))
     assert env["display_type"] == "table"
-    assert env["data"] == [{"g": "a", "v": 1}]         # a list of records
+    assert env["data"] == [{"g": "a", "v": 1}]       # a list of records
 
 
-def test_extract_returns_none_for_non_json_and_note_only():
+def test_extract_ignores_figures_and_note_only():
+    # Figures go to the app panel, not inline -- the extractor never handles them.
+    fig_str = json.dumps({"data": [{"type": "bar"}], "layout": {}})
+    assert AnalysisDisplay().extract(json.dumps({"note": "ok", "figure": fig_str})) is None
     assert AnalysisDisplay().extract("not json at all") is None
     assert AnalysisDisplay().extract(json.dumps({"note": "just text"})) is None
     assert AnalysisDisplay().extract(json.dumps(["a", "list"])) is None
@@ -86,12 +179,15 @@ def test_make_analyst_without_key_returns_the_stub(monkeypatch):
     assert out and "offline analyst" in out[0]
 
 
-def test_make_analyst_wrapper_streams_display_inline_for_a_seeded_df(monkeypatch):
-    """The make_analyst wrapper: it loads the df from ctx.inputs, prefixes the
-    schema, and streams the graph -- yielding a display_inline figure frame."""
+def test_make_analyst_wrapper_streams_and_charts_into_the_app(monkeypatch):
+    """The make_analyst wrapper loads the df from ctx.inputs, prefixes the schema,
+    and streams the graph. A plotted figure is emitted as a set_output frame
+    (drained by fast_dash), and the model still streams a text reply."""
     import asyncio
 
     from langchain_core.messages import AIMessage
+
+    from fast_dash.agent_tools import drain_frames as _drain, turn_buffer as _buf
 
     model = _scripted_tool_model([
         AIMessage(content="", tool_calls=[{
@@ -118,13 +214,15 @@ def test_make_analyst_wrapper_streams_display_inline_for_a_seeded_df(monkeypatch
             frames.append(f)
         return frames
 
-    frames = asyncio.run(run())
-    inline = [f for f in frames
-              if isinstance(f, dict) and f.get("type") == "extraction"
-              and f.get("extracted_type") == "display_inline"]
-    assert inline, "expected an inline display frame"
-    assert inline[0]["data"]["display_type"] == "figure"
-    assert isinstance(inline[0]["data"]["data"], dict)      # a plotly figure dict
+    # Open a turn buffer so the tool's emit_frame lands somewhere we can inspect
+    # (in the app this is opened by fast_dash's turn runner).
+    with _buf():
+        frames = asyncio.run(run())
+        emitted = _drain()
+
+    set_outputs = [f for f in emitted if f.get("type") == "set_output"]
+    assert set_outputs and set_outputs[0]["slot"] == CHART_SLOT
+    assert isinstance(set_outputs[0]["value"], dict)         # a plotly figure dict
     assert any(isinstance(f, dict) and f.get("type") == "content" for f in frames)
 
 
@@ -150,8 +248,6 @@ def test_make_analyst_wrapper_chats_without_a_dataset(monkeypatch):
         return [f async for f in analyst("What can you do?", Ctx())]
 
     frames = asyncio.run(run())
-    # The turn streamed real content frames from the model (not a hardcoded nag),
-    # and no run_analysis tool call was forced with no data present.
     text = " ".join(
         f.get("content", "") for f in frames
         if isinstance(f, dict) and f.get("type") == "content")

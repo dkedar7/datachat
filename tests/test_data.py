@@ -36,3 +36,43 @@ def test_schema_and_summary():
     assert "3 rows" in data.schema_text(df).replace(",", "")
     md = data.summary_markdown(df)
     assert "Loaded" in md and "| x |" in md
+
+
+# --- default overview chart ----------------------------------------------- #
+def _is_figure(fig):
+    import plotly.graph_objects as go
+    return isinstance(fig, go.Figure)
+
+
+def test_empty_chart_is_a_figure_inviting_a_load():
+    fig = data.empty_chart()
+    assert _is_figure(fig)
+    d = fig.to_plotly_json()                          # renderable as a plotly dict
+    assert "data" in d and "layout" in d
+
+
+def test_overview_chart_histograms_a_numeric_column():
+    df = pd.DataFrame({"n": [1, 2, 2, 3, 3, 3], "g": ["a", "b", "a", "b", "a", "b"]})
+    fig = data.overview_chart(df)
+    assert _is_figure(fig)
+    assert fig.data and fig.data[0].type == "histogram"
+
+
+def test_overview_chart_bars_a_categorical_when_no_numeric():
+    df = pd.DataFrame({"g": ["a", "b", "a", "c", "a"]})
+    fig = data.overview_chart(df)
+    assert _is_figure(fig)
+    assert fig.data and fig.data[0].type == "bar"
+
+
+def test_overview_chart_is_safe_on_all_nan_and_single_column():
+    import numpy as np
+    fig_nan = data.overview_chart(pd.DataFrame({"x": [np.nan, np.nan]}))
+    assert _is_figure(fig_nan)                         # never raises, always a figure
+    fig_one = data.overview_chart(pd.DataFrame({"only": [1, 2, 3]}))
+    assert _is_figure(fig_one)
+
+
+def test_overview_chart_is_safe_on_empty_frame():
+    fig = data.overview_chart(pd.DataFrame())
+    assert _is_figure(fig)

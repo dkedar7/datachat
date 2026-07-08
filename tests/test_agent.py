@@ -114,12 +114,16 @@ def test_make_analyst_wrapper_streams_display_inline_for_a_seeded_df(monkeypatch
     assert any(isinstance(f, dict) and f.get("type") == "content" for f in frames)
 
 
-def test_make_analyst_wrapper_asks_for_a_dataset_when_none(monkeypatch):
+def test_make_analyst_wrapper_chats_without_a_dataset(monkeypatch):
+    """No gate on a loaded dataset: with no data the wrapper still streams the
+    graph (the agent converses); it does not hard-return a nag message."""
     import asyncio
 
+    from langchain_core.messages import AIMessage
+
+    model = _scripted_tool_model([AIMessage(content="I can analyze any dataset.")])
     monkeypatch.setattr("analyst.agent.has_llm", lambda: True)
-    monkeypatch.setattr("analyst.agent.build_graph",
-                        lambda: build_graph(model=_scripted_tool_model([])))
+    monkeypatch.setattr("analyst.agent.build_graph", lambda: build_graph(model=model))
 
     class Ctx:
         thread_id = "empty1"
@@ -129,10 +133,16 @@ def test_make_analyst_wrapper_asks_for_a_dataset_when_none(monkeypatch):
 
     async def run():
         analyst = make_analyst()
-        return [f async for f in analyst("Plot something.", Ctx())]
+        return [f async for f in analyst("What can you do?", Ctx())]
 
-    out = asyncio.run(run())
-    assert out and "Upload a CSV" in out[0]
+    frames = asyncio.run(run())
+    # The turn streamed real content frames from the model (not a hardcoded nag),
+    # and no run_analysis tool call was forced with no data present.
+    text = " ".join(
+        f.get("content", "") for f in frames
+        if isinstance(f, dict) and f.get("type") == "content")
+    assert "I can analyze any dataset." in text
+    assert not any(isinstance(f, dict) and f.get("type") == "extraction" for f in frames)
 
 
 # --- test helpers --------------------------------------------------------- #

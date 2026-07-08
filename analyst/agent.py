@@ -41,7 +41,12 @@ trace); the figure/table are shown to the user, not returned to you as data.
 
 Workflow: inspect the schema, run focused code, and give a short, concrete \
 answer grounded in the results. If code errors, read the traceback and fix it. \
-Keep replies concise."""
+Keep replies concise.
+
+If no dataset is loaded yet, just chat: answer the user's question, briefly say \
+what you can do, and invite them to upload a CSV/Excel file or paste a data link \
+whenever they want analysis. Do NOT call run_analysis until a dataset is \
+loaded."""
 
 
 def _thread_id(config: RunnableConfig) -> str:
@@ -142,11 +147,15 @@ def make_analyst():
         tid = getattr(ctx, "thread_id", None) or "default"
         inputs = getattr(ctx, "inputs", None) or {}
         df = data.get_dataframe(tid, inputs.get(UPLOAD_ID), inputs.get(URL_ID))
-        if df is None:
-            yield ("Upload a CSV or Excel file (or paste a link to one) using the "
-                   "panel on the left, and I'll analyze it for you.")
-            return
-        prompt = f"[Dataset: {schema_text(df)}]\n\n{query}"
+        # No gate on a loaded dataset: the user can chat immediately. When there's
+        # no data, the agent just converses (and run_analysis stays a no-op until
+        # a dataset arrives); a loaded df is surfaced via its schema.
+        if df is not None:
+            prompt = f"[Dataset loaded: {schema_text(df)}]\n\n{query}"
+        else:
+            prompt = ("[No dataset is loaded yet -- the user has not uploaded a file "
+                      "or pasted a link. Chat normally and help them get started; do "
+                      "not call run_analysis until a dataset is available.]\n\n" + query)
         try:
             async for frame in bridge(prompt, ctx):
                 yield frame

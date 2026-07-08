@@ -51,7 +51,7 @@ def build_app() -> FastDash:
         chat=make_analyst(),
         chat_title="Data Analyst",
         chat_tools=(),  # the analyst reads the data; it operates nothing structural
-        chat_placeholder="Load a dataset, then ask me to explore or plot it.",
+        chat_placeholder="Ask me anything, or load a dataset and I'll analyze it.",
     )
 
 

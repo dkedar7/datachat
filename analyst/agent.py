@@ -240,16 +240,15 @@ def load_dataset(url: str, config: RunnableConfig) -> str:
         return "Could not load a dataset from that URL (%s)." % type(exc).__name__
     if df is None:
         return "Could not load a dataset from that URL -- check the link."
-    # Reflect the URL in the app's input, and populate the preview + summary
-    # panels directly (via set_output) so a run_app + Run-reset can't race the
-    # panels while the agent plots into the Chart panel in the same turn.
+    # Caching the df above is the fix for load+plot-in-one-turn: run_analysis
+    # (same thread) now sees `df` instead of finding an empty cache. Set the URL
+    # input and Run the deterministic app to fill the preview/chart/summary
+    # panels -- run_app drives all three atomically through the proven drive
+    # reducer; the agent's run_analysis then overwrites the Chart panel.
     emit_frame({"type": "set_input", "name": URL_ID, "value": url})
-    emit_frame({"type": "set_output", "slot": PREVIEW_SLOT, "value": df.head(20)})
-    emit_frame({"type": "set_output", "slot": SUMMARY_SLOT,
-                "value": data.summary_markdown(df)})
-    return ("Loaded %d rows x %d columns; filled the Data Preview and Summary "
-            "panels. `df` is ready -- call run_analysis to plot it."
-            % (df.shape[0], df.shape[1]))
+    emit_frame({"type": "run_app"})
+    return ("Loaded %d rows x %d columns and filled the panels. `df` is ready -- "
+            "call run_analysis to chart it." % (df.shape[0], df.shape[1]))
 
 
 def build_graph(model=None):

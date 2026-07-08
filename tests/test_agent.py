@@ -258,14 +258,11 @@ def test_load_dataset_makes_df_available_in_the_same_turn(monkeypatch):
     assert data.current_dataframe(tid) is not None
     assert "Loaded 3 rows" in ack
 
-    # It filled the URL input + the preview (A) and summary (C) panels.
+    # It set the URL input and Ran the app (which fills all panels via explore()
+    # through the proven drive reducer -- reliable for a multi-frame turn).
     assert {"type": "set_input", "name": "dataset_url",
             "value": "http://example.com/data.csv"} in frames
-    set_outputs = {f["slot"]: f["value"] for f in frames if f.get("type") == "set_output"}
-    assert PREVIEW_SLOT in set_outputs and SUMMARY_SLOT in set_outputs
-    assert isinstance(set_outputs[PREVIEW_SLOT], pd.DataFrame)      # -> Table.data
-    assert isinstance(set_outputs[SUMMARY_SLOT], str)              # -> Markdown
-    assert not any(f.get("type") == "run_app" for f in frames)     # no run_app race
+    assert {"type": "run_app"} in frames
 
     # Same-turn plot: run_analysis now has `df` and charts into panel B.
     with turn_buffer():
